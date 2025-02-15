@@ -108,6 +108,21 @@ class FileSync {
             repo
         };
     }
+    isRepositoryArchived(repo) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { data } = yield this.octokit.repos.get({
+                    owner: repo.owner,
+                    repo: repo.repo
+                });
+                return data.archived;
+            }
+            catch (error) {
+                this.log.warning(`⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${error.message}`);
+                return false;
+            }
+        });
+    }
     run() {
         return __awaiter(this, void 0, void 0, function* () {
             this.log.info('🏃 Running GitHub File Sync');
@@ -124,6 +139,12 @@ class FileSync {
                 this.log.endGroup();
                 for (const remoteRepoStr of sync.repos) {
                     const remoteRepo = this.toRepo(remoteRepoStr);
+                    // Check if repository is archived
+                    const isArchived = yield this.isRepositoryArchived(remoteRepo);
+                    if (isArchived) {
+                        this.log.info(`⏭️ Skipping ${toRepoStr(remoteRepo)} as it is archived`);
+                        continue;
+                    }
                     this.log.info(`💄 Creating pull request for ${toRepoStr(remoteRepo)}`);
                     const prOptions = Object.assign(Object.assign({}, remoteRepo), { title: `🔃 Synced files from ${this.repoStr}`, body: `🔃 Synced files from [${this.repoStr}](${this.htmlUrl})\n\nThis PR was created automatically by the [ghaction.file.sync](https://github.com/jetersen/ghaction.file.sync) workflow run [#${this.runId}](${this.htmlUrl}/actions/runs/${this.runId})`, head: `${toRepoStr(this.repo, '-')}-${this.gitSha}`, createWhenEmpty: false, changes: [filesToChanges(sync.files)] });
                     if (this.dryRun) {

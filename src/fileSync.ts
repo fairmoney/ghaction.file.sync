@@ -64,6 +64,23 @@ export class FileSync {
     }
   }
 
+  async isRepositoryArchived(repo: Repo): Promise<boolean> {
+    try {
+      const {data} = await this.octokit.repos.get({
+        owner: repo.owner,
+        repo: repo.repo
+      })
+      return data.archived
+    } catch (error) {
+      this.log.warning(
+        `⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${
+          error.message
+        }`
+      )
+      return false
+    }
+  }
+
   async run(): Promise<void> {
     this.log.info('🏃 Running GitHub File Sync')
     const config = await this.loadConfigFile()
@@ -82,6 +99,16 @@ export class FileSync {
       this.log.endGroup()
       for (const remoteRepoStr of sync.repos) {
         const remoteRepo = this.toRepo(remoteRepoStr)
+
+        // Check if repository is archived
+        const isArchived = await this.isRepositoryArchived(remoteRepo)
+        if (isArchived) {
+          this.log.info(
+            `⏭️ Skipping ${toRepoStr(remoteRepo)} as it is archived`
+          )
+          continue
+        }
+
         this.log.info(`💄 Creating pull request for ${toRepoStr(remoteRepo)}`)
         const prOptions: createPullRequest.Options = {
           ...remoteRepo,
