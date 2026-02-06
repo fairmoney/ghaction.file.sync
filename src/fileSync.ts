@@ -203,6 +203,12 @@ export class FileSync {
               this.log.info(
                 `✅ Pull request created: ${pr.data.number} ${pr.data.html_url}`
               )
+              const branchPrefix = `${toRepoStr(this.repo, '-')}-`
+              await this.closeExistingPRs(
+                remoteRepo,
+                pr.data.number,
+                branchPrefix
+              )
             }
           } catch (error) {
             const msg = toErrorMessage(error)
