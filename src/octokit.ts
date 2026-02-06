@@ -8,6 +8,7 @@ import {config} from '@probot/octokit-plugin-config'
 import {createPullRequest} from 'octokit-plugin-create-pull-request'
 import {inputs, context} from './context'
 import {Log} from './log'
+import {toErrorMessage} from './util'
 
 export async function getOctokit(
   log: Log
@@ -57,10 +58,9 @@ export async function getOctokit(
       )
     }
   } catch (e) {
-    log.error(e.message)
-    throw new Error(
-      '🔒 Failed to authenticate, did you remember to install your GitHub App?'
-    )
+    const msg = toErrorMessage(e)
+    log.error(msg)
+    throw new Error(`🔒 Failed to authenticate: ${msg}`)
   } finally {
     core.endGroup()
   }
