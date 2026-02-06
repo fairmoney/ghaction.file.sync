@@ -89,7 +89,9 @@ export class FileSync {
   ): Promise<void> {
     if (this.dryRun) {
       this.log.info(
-        `✔ Skipping cleanup of existing PRs for ${toRepoStr(remoteRepo)} due to dry run`
+        `✔ Skipping cleanup of existing PRs for ${toRepoStr(
+          remoteRepo
+        )} due to dry run`
       )
       return
     }
@@ -130,7 +132,9 @@ export class FileSync {
         )
       } catch (error) {
         this.log.warning(
-          `⚠️ Failed to close PR #${pr.number} in ${toRepoStr(remoteRepo)}: ${toErrorMessage(error)}`
+          `⚠️ Failed to close PR #${pr.number} in ${toRepoStr(
+            remoteRepo
+          )}: ${toErrorMessage(error)}`
         )
       }
     }
