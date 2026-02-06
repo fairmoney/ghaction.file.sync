@@ -3,6 +3,7 @@ import {context, inputs} from './context'
 import {FileSync} from './fileSync'
 import {getOctokit} from './octokit'
 import {Log} from './log'
+import {toErrorMessage} from './util'
 
 async function run(): Promise<void> {
   try {
@@ -11,7 +12,7 @@ async function run(): Promise<void> {
     const fileSync = new FileSync(inputs, context, octokit, log)
     await fileSync.run()
   } catch (error) {
-    core.setFailed(error.message)
+    core.setFailed(toErrorMessage(error))
   }
 }
 

@@ -75,7 +75,7 @@ export class FileSync {
     } catch (error) {
       this.log.warning(
         `⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${
-          error.message
+          toErrorMessage(error)
         }`
       )
       return false
