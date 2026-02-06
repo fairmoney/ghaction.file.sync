@@ -74,9 +74,9 @@ export class FileSync {
       return data.archived
     } catch (error) {
       this.log.warning(
-        `⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${
-          toErrorMessage(error)
-        }`
+        `⚠️ Failed to check archive status for ${toRepoStr(
+          repo
+        )}: ${toErrorMessage(error)}`
       )
       return false
     }
@@ -152,7 +152,9 @@ export class FileSync {
               this.log.info(`⛔ Pull request already exists`)
             } else {
               this.log.warning(
-                `⚠️ Failed to create pull request for ${toRepoStr(remoteRepo)}: ${msg}`
+                `⚠️ Failed to create pull request for ${toRepoStr(
+                  remoteRepo
+                )}: ${msg}`
               )
             }
           }
