@@ -85,7 +85,8 @@ export class FileSync {
   async run(): Promise<void> {
     this.log.info('🏃 Running GitHub File Sync')
     const config = await this.loadConfigFile()
-    for (const sync of config.syncs) {
+    for (let syncIndex = 0; syncIndex < config.syncs.length; syncIndex++) {
+      const sync = config.syncs[syncIndex]
       this.log.startGroup(`📝 Fetching files from ${this.repoStr}`)
       for (const file of sync.files) {
         this.log.info(`📝 Fetching ${file.src}`)
@@ -127,7 +128,7 @@ export class FileSync {
           ...remoteRepo,
           title: `🔃 Synced files from ${this.repoStr}`,
           body: `🔃 Synced files from [${this.repoStr}](${this.htmlUrl})\n\nThis PR was created automatically by the [ghaction.file.sync](https://github.com/jetersen/ghaction.file.sync) workflow run [#${this.runId}](${this.htmlUrl}/actions/runs/${this.runId})`,
-          head: `${toRepoStr(this.repo, '-')}-${this.gitSha}`,
+          head: `${toRepoStr(this.repo, '-')}-${this.gitSha}-${syncIndex}`,
           createWhenEmpty: false,
           changes: [filesToChanges(sync.files)]
         }
