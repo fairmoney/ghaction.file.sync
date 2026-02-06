@@ -82,6 +82,60 @@ export class FileSync {
     }
   }
 
+  async closeExistingPRs(
+    remoteRepo: Repo,
+    newPrNumber: number,
+    branchPrefix: string
+  ): Promise<void> {
+    if (this.dryRun) {
+      this.log.info(
+        `✔ Skipping cleanup of existing PRs for ${toRepoStr(remoteRepo)} due to dry run`
+      )
+      return
+    }
+
+    const {data: openPRs} = await this.octokit.rest.pulls.list({
+      ...remoteRepo,
+      state: 'open',
+      per_page: 100
+    })
+
+    const stalePRs = openPRs.filter(
+      (pr: {head: {ref: string}; number: number}) =>
+        pr.head.ref.startsWith(branchPrefix) && pr.number !== newPrNumber
+    )
+
+    for (const pr of stalePRs) {
+      try {
+        await this.octokit.rest.issues.createComment({
+          ...remoteRepo,
+          issue_number: pr.number,
+          body: `Superseded by #${newPrNumber}`
+        })
+        await this.octokit.rest.pulls.update({
+          ...remoteRepo,
+          pull_number: pr.number,
+          state: 'closed'
+        })
+        try {
+          await this.octokit.rest.git.deleteRef({
+            ...remoteRepo,
+            ref: `heads/${pr.head.ref}`
+          })
+        } catch {
+          // Branch may already be deleted — ignore
+        }
+        this.log.info(
+          `🧹 Closed superseded PR #${pr.number} and deleted branch ${pr.head.ref}`
+        )
+      } catch (error) {
+        this.log.warning(
+          `⚠️ Failed to close PR #${pr.number} in ${toRepoStr(remoteRepo)}: ${toErrorMessage(error)}`
+        )
+      }
+    }
+  }
+
   async run(): Promise<void> {
     this.log.info('🏃 Running GitHub File Sync')
     const config = await this.loadConfigFile()
