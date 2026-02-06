@@ -89,12 +89,24 @@ export class FileSync {
       this.log.startGroup(`📝 Fetching files from ${this.repoStr}`)
       for (const file of sync.files) {
         this.log.info(`📝 Fetching ${file.src}`)
-        const {data} = await this.octokit.repos.getContent({
-          ...this.repo,
-          path: file.src
-        })
-        if ('content' in data) {
-          file.content = data.content
+        try {
+          const {data} = await this.octokit.repos.getContent({
+            ...this.repo,
+            path: file.src
+          })
+          if (Array.isArray(data)) {
+            this.log.warning(
+              `⚠️ Skipping '${file.src}': path is a directory, not a file`
+            )
+            continue
+          }
+          if ('content' in data) {
+            file.content = data.content
+          }
+        } catch (error) {
+          this.log.warning(
+            `⚠️ Failed to fetch '${file.src}': ${toErrorMessage(error)}`
+          )
         }
       }
       this.log.endGroup()
