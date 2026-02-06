@@ -124,6 +124,32 @@ class FileSync {
             }
         });
     }
+    closeExistingPRs(remoteRepo, newPrNumber, branchPrefix) {
+        return __awaiter(this, void 0, void 0, function* () {
+            if (this.dryRun) {
+                this.log.info(`✔ Skipping cleanup of existing PRs for ${toRepoStr(remoteRepo)} due to dry run`);
+                return;
+            }
+            const { data: openPRs } = yield this.octokit.rest.pulls.list(Object.assign(Object.assign({}, remoteRepo), { state: 'open', per_page: 100 }));
+            const stalePRs = openPRs.filter((pr) => pr.head.ref.startsWith(branchPrefix) && pr.number !== newPrNumber);
+            for (const pr of stalePRs) {
+                try {
+                    yield this.octokit.rest.issues.createComment(Object.assign(Object.assign({}, remoteRepo), { issue_number: pr.number, body: `Superseded by #${newPrNumber}` }));
+                    yield this.octokit.rest.pulls.update(Object.assign(Object.assign({}, remoteRepo), { pull_number: pr.number, state: 'closed' }));
+                    try {
+                        yield this.octokit.rest.git.deleteRef(Object.assign(Object.assign({}, remoteRepo), { ref: `heads/${pr.head.ref}` }));
+                    }
+                    catch (_a) {
+                        // Branch may already be deleted — ignore
+                    }
+                    this.log.info(`🧹 Closed superseded PR #${pr.number} and deleted branch ${pr.head.ref}`);
+                }
+                catch (error) {
+                    this.log.warning(`⚠️ Failed to close PR #${pr.number} in ${toRepoStr(remoteRepo)}: ${util_1.toErrorMessage(error)}`);
+                }
+            }
+        });
+    }
     run() {
         return __awaiter(this, void 0, void 0, function* () {
             this.log.info('🏃 Running GitHub File Sync');
@@ -169,6 +195,8 @@ class FileSync {
                             }
                             else {
                                 this.log.info(`✅ Pull request created: ${pr.data.number} ${pr.data.html_url}`);
+                                const branchPrefix = `${toRepoStr(this.repo, '-')}-`;
+                                yield this.closeExistingPRs(remoteRepo, pr.data.number, branchPrefix);
                             }
                         }
                         catch (error) {
