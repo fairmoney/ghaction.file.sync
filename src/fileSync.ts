@@ -4,6 +4,7 @@ import {createPullRequest} from 'octokit-plugin-create-pull-request'
 import {Log} from './log'
 import {Inputs, Config, Repo, File} from './types'
 import {dump} from 'js-yaml'
+import {toErrorMessage} from './util'
 
 export class FileSync {
   private readonly configFile
@@ -133,10 +134,13 @@ export class FileSync {
               )
             }
           } catch (error) {
-            if (error.message === 'Reference already exists') {
+            const msg = toErrorMessage(error)
+            if (msg === 'Reference already exists') {
               this.log.info(`⛔ Pull request already exists`)
             } else {
-              throw error
+              this.log.warning(
+                `⚠️ Failed to create pull request for ${toRepoStr(remoteRepo)}: ${msg}`
+              )
             }
           }
         }
