@@ -69,6 +69,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.FileSync = void 0;
 const js_yaml_1 = __nccwpck_require__(1917);
+const util_1 = __nccwpck_require__(4024);
 class FileSync {
     constructor(inputs, context, octokit, log) {
         var _a;
@@ -118,7 +119,7 @@ class FileSync {
                 return data.archived;
             }
             catch (error) {
-                this.log.warning(`⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${error.message}`);
+                this.log.warning(`⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${util_1.toErrorMessage(error)}`);
                 return false;
             }
         });
@@ -127,13 +128,23 @@ class FileSync {
         return __awaiter(this, void 0, void 0, function* () {
             this.log.info('🏃 Running GitHub File Sync');
             const config = yield this.loadConfigFile();
-            for (const sync of config.syncs) {
+            for (let syncIndex = 0; syncIndex < config.syncs.length; syncIndex++) {
+                const sync = config.syncs[syncIndex];
                 this.log.startGroup(`📝 Fetching files from ${this.repoStr}`);
                 for (const file of sync.files) {
                     this.log.info(`📝 Fetching ${file.src}`);
-                    const { data } = yield this.octokit.repos.getContent(Object.assign(Object.assign({}, this.repo), { path: file.src }));
-                    if ('content' in data) {
-                        file.content = data.content;
+                    try {
+                        const { data } = yield this.octokit.repos.getContent(Object.assign(Object.assign({}, this.repo), { path: file.src }));
+                        if (Array.isArray(data)) {
+                            this.log.warning(`⚠️ Skipping '${file.src}': path is a directory, not a file`);
+                            continue;
+                        }
+                        if ('content' in data) {
+                            file.content = data.content;
+                        }
+                    }
+                    catch (error) {
+                        this.log.warning(`⚠️ Failed to fetch '${file.src}': ${util_1.toErrorMessage(error)}`);
                     }
                 }
                 this.log.endGroup();
@@ -146,7 +157,7 @@ class FileSync {
                         continue;
                     }
                     this.log.info(`💄 Creating pull request for ${toRepoStr(remoteRepo)}`);
-                    const prOptions = Object.assign(Object.assign({}, remoteRepo), { title: `🔃 Synced files from ${this.repoStr}`, body: `🔃 Synced files from [${this.repoStr}](${this.htmlUrl})\n\nThis PR was created automatically by the [ghaction.file.sync](https://github.com/jetersen/ghaction.file.sync) workflow run [#${this.runId}](${this.htmlUrl}/actions/runs/${this.runId})`, head: `${toRepoStr(this.repo, '-')}-${this.gitSha}`, createWhenEmpty: false, changes: [filesToChanges(sync.files)] });
+                    const prOptions = Object.assign(Object.assign({}, remoteRepo), { title: `🔃 Synced files from ${this.repoStr}`, body: `🔃 Synced files from [${this.repoStr}](${this.htmlUrl})\n\nThis PR was created automatically by the [ghaction.file.sync](https://github.com/jetersen/ghaction.file.sync) workflow run [#${this.runId}](${this.htmlUrl}/actions/runs/${this.runId})`, head: `${toRepoStr(this.repo, '-')}-${this.gitSha}-${syncIndex}`, createWhenEmpty: false, changes: [filesToChanges(sync.files)] });
                     if (this.dryRun) {
                         this.log.info('✔ No pull request was created due to dry run');
                     }
@@ -161,11 +172,12 @@ class FileSync {
                             }
                         }
                         catch (error) {
-                            if (error.message === 'Reference already exists') {
+                            const msg = util_1.toErrorMessage(error);
+                            if (msg === 'Reference already exists') {
                                 this.log.info(`⛔ Pull request already exists`);
                             }
                             else {
-                                throw error;
+                                this.log.warning(`⚠️ Failed to create pull request for ${toRepoStr(remoteRepo)}: ${msg}`);
                             }
                         }
                     }
@@ -293,6 +305,7 @@ const context_1 = __nccwpck_require__(3842);
 const fileSync_1 = __nccwpck_require__(2749);
 const octokit_1 = __nccwpck_require__(3258);
 const log_1 = __nccwpck_require__(3817);
+const util_1 = __nccwpck_require__(4024);
 function run() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
@@ -302,7 +315,7 @@ function run() {
             yield fileSync.run();
         }
         catch (error) {
-            core.setFailed(error.message);
+            core.setFailed(util_1.toErrorMessage(error));
         }
     });
 }
@@ -352,6 +365,7 @@ const auth_app_1 = __nccwpck_require__(7541);
 const octokit_plugin_config_1 = __nccwpck_require__(9326);
 const octokit_plugin_create_pull_request_1 = __nccwpck_require__(6205);
 const context_1 = __nccwpck_require__(3842);
+const util_1 = __nccwpck_require__(4024);
 function getOctokit(log) {
     return __awaiter(this, void 0, void 0, function* () {
         core.startGroup('🔐 Authenticating');
@@ -384,8 +398,9 @@ function getOctokit(log) {
             }
         }
         catch (e) {
-            log.error(e.message);
-            throw new Error('🔒 Failed to authenticate, did you remember to install your GitHub App?');
+            const msg = util_1.toErrorMessage(e);
+            log.error(msg);
+            throw new Error(`🔒 Failed to authenticate: ${msg}`);
         }
         finally {
             core.endGroup();
@@ -395,6 +410,31 @@ function getOctokit(log) {
     });
 }
 exports.getOctokit = getOctokit;
+
+
+/***/ }),
+
+/***/ 4024:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.toErrorMessage = void 0;
+function toErrorMessage(error) {
+    if (error instanceof Error)
+        return error.message;
+    if (typeof error === 'string')
+        return error;
+    if (typeof error === 'object' &&
+        error !== null &&
+        'message' in error &&
+        typeof error.message === 'string') {
+        return error.message;
+    }
+    return 'Unknown error';
+}
+exports.toErrorMessage = toErrorMessage;
 
 
 /***/ }),
