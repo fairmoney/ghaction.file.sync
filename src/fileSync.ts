@@ -4,6 +4,7 @@ import {createPullRequest} from 'octokit-plugin-create-pull-request'
 import {Log} from './log'
 import {Inputs, Config, Repo, File} from './types'
 import {dump} from 'js-yaml'
+import {toErrorMessage} from './util'
 
 export class FileSync {
   private readonly configFile
@@ -73,27 +74,98 @@ export class FileSync {
       return data.archived
     } catch (error) {
       this.log.warning(
-        `⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${
-          error.message
-        }`
+        `⚠️ Failed to check archive status for ${toRepoStr(
+          repo
+        )}: ${toErrorMessage(error)}`
       )
       return false
+    }
+  }
+
+  async closeExistingPRs(
+    remoteRepo: Repo,
+    newPrNumber: number,
+    branchPrefix: string
+  ): Promise<void> {
+    if (this.dryRun) {
+      this.log.info(
+        `✔ Skipping cleanup of existing PRs for ${toRepoStr(
+          remoteRepo
+        )} due to dry run`
+      )
+      return
+    }
+
+    const {data: openPRs} = await this.octokit.rest.pulls.list({
+      ...remoteRepo,
+      state: 'open',
+      per_page: 100
+    })
+
+    const stalePRs = openPRs.filter(
+      (pr: {head: {ref: string}; number: number}) =>
+        pr.head.ref.startsWith(branchPrefix) && pr.number !== newPrNumber
+    )
+
+    for (const pr of stalePRs) {
+      try {
+        await this.octokit.rest.issues.createComment({
+          ...remoteRepo,
+          issue_number: pr.number,
+          body: `Superseded by #${newPrNumber}`
+        })
+        await this.octokit.rest.pulls.update({
+          ...remoteRepo,
+          pull_number: pr.number,
+          state: 'closed'
+        })
+        try {
+          await this.octokit.rest.git.deleteRef({
+            ...remoteRepo,
+            ref: `heads/${pr.head.ref}`
+          })
+        } catch {
+          // Branch may already be deleted — ignore
+        }
+        this.log.info(
+          `🧹 Closed superseded PR #${pr.number} and deleted branch ${pr.head.ref}`
+        )
+      } catch (error) {
+        this.log.warning(
+          `⚠️ Failed to close PR #${pr.number} in ${toRepoStr(
+            remoteRepo
+          )}: ${toErrorMessage(error)}`
+        )
+      }
     }
   }
 
   async run(): Promise<void> {
     this.log.info('🏃 Running GitHub File Sync')
     const config = await this.loadConfigFile()
-    for (const sync of config.syncs) {
+    for (let syncIndex = 0; syncIndex < config.syncs.length; syncIndex++) {
+      const sync = config.syncs[syncIndex]
       this.log.startGroup(`📝 Fetching files from ${this.repoStr}`)
       for (const file of sync.files) {
         this.log.info(`📝 Fetching ${file.src}`)
-        const {data} = await this.octokit.repos.getContent({
-          ...this.repo,
-          path: file.src
-        })
-        if ('content' in data) {
-          file.content = data.content
+        try {
+          const {data} = await this.octokit.repos.getContent({
+            ...this.repo,
+            path: file.src
+          })
+          if (Array.isArray(data)) {
+            this.log.warning(
+              `⚠️ Skipping '${file.src}': path is a directory, not a file`
+            )
+            continue
+          }
+          if ('content' in data) {
+            file.content = data.content
+          }
+        } catch (error) {
+          this.log.warning(
+            `⚠️ Failed to fetch '${file.src}': ${toErrorMessage(error)}`
+          )
         }
       }
       this.log.endGroup()
@@ -114,7 +186,7 @@ export class FileSync {
           ...remoteRepo,
           title: `🔃 Synced files from ${this.repoStr}`,
           body: `🔃 Synced files from [${this.repoStr}](${this.htmlUrl})\n\nThis PR was created automatically by the [ghaction.file.sync](https://github.com/jetersen/ghaction.file.sync) workflow run [#${this.runId}](${this.htmlUrl}/actions/runs/${this.runId})`,
-          head: `${toRepoStr(this.repo, '-')}-${this.gitSha}`,
+          head: `${toRepoStr(this.repo, '-')}-${this.gitSha}-${syncIndex}`,
           createWhenEmpty: false,
           changes: [filesToChanges(sync.files)]
         }
@@ -131,12 +203,23 @@ export class FileSync {
               this.log.info(
                 `✅ Pull request created: ${pr.data.number} ${pr.data.html_url}`
               )
+              const branchPrefix = `${toRepoStr(this.repo, '-')}-`
+              await this.closeExistingPRs(
+                remoteRepo,
+                pr.data.number,
+                branchPrefix
+              )
             }
           } catch (error) {
-            if (error.message === 'Reference already exists') {
+            const msg = toErrorMessage(error)
+            if (msg === 'Reference already exists') {
               this.log.info(`⛔ Pull request already exists`)
             } else {
-              throw error
+              this.log.warning(
+                `⚠️ Failed to create pull request for ${toRepoStr(
+                  remoteRepo
+                )}: ${msg}`
+              )
             }
           }
         }
