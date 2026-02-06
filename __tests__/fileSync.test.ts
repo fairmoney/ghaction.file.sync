@@ -40,14 +40,14 @@ function createFileSync(
     configFile: '.github/syncs.yml',
     dryRun
   }
-  const context = ({
+  const context = {
     repo: {owner: 'source-owner', repo: 'source-repo'},
     sha: 'abc123def456',
     runId: 12345,
     payload: {
       repository: {html_url: 'https://github.com/source-owner/source-repo'}
     }
-  } as unknown) as Context
+  } as unknown as Context
   const log = new Log(dryRun)
   return new FileSync(inputs, context, octokit as never, log)
 }

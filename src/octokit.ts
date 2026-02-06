@@ -65,6 +65,7 @@ export async function getOctokit(
     core.endGroup()
   }
 
+  // @ts-expect-error: plugin types conflict due to duplicate @octokit/core versions
   const github = GitHub.plugin(config, createPullRequest)
   return new github(options)
 }
