@@ -60,7 +60,7 @@ export async function getOctokit(
   } catch (e) {
     const msg = toErrorMessage(e)
     log.error(msg)
-    throw new Error(`🔒 Failed to authenticate: ${msg}`)
+    throw new Error(`🔒 Failed to authenticate: ${msg}`, {cause: e})
   } finally {
     core.endGroup()
   }

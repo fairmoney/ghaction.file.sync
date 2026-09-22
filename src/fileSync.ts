@@ -96,7 +96,9 @@ export class FileSync {
       return
     }
 
-    const {data: openPRs} = await this.octokit.rest.pulls.list({
+    // Paginate: a repo with more open PRs than a single page holds would
+    // otherwise leave the overflow open forever.
+    const openPRs = await this.octokit.paginate(this.octokit.rest.pulls.list, {
       ...remoteRepo,
       state: 'open',
       per_page: 100

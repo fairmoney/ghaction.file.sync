@@ -140,7 +140,9 @@ class FileSync {
             this.log.info(`✔ Skipping cleanup of existing PRs for ${toRepoStr(remoteRepo)} due to dry run`);
             return;
         }
-        const { data: openPRs } = await this.octokit.rest.pulls.list({
+        // Paginate: a repo with more open PRs than a single page holds would
+        // otherwise leave the overflow open forever.
+        const openPRs = await this.octokit.paginate(this.octokit.rest.pulls.list, {
             ...remoteRepo,
             state: 'open',
             per_page: 100
@@ -397,7 +399,7 @@ async function run() {
         core.setFailed((0, util_1.toErrorMessage)(error));
     }
 }
-run();
+void run();
 
 
 /***/ }),
@@ -489,7 +491,7 @@ async function getOctokit(log) {
     catch (e) {
         const msg = (0, util_1.toErrorMessage)(e);
         log.error(msg);
-        throw new Error(`🔒 Failed to authenticate: ${msg}`);
+        throw new Error(`🔒 Failed to authenticate: ${msg}`, { cause: e });
     }
     finally {
         core.endGroup();
