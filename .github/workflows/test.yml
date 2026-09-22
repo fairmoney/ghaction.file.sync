@@ -9,6 +9,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: yarn
       - run: yarn install --frozen-lockfile
       - run: yarn all
+      - name: Verify dist/ is up to date
+        run: |
+          if [ -n "$(git status --porcelain dist/)" ]; then
+            echo "dist/ is out of date, run 'yarn package' and commit the result"
+            git diff --stat dist/
+            exit 1
+          fi

@@ -7,15 +7,29 @@ import {Context} from '@actions/github/lib/context'
 function createMockOctokit(
   overrides: {
     pullsList?: jest.Mock
+    paginate?: jest.Mock
     issuesCreateComment?: jest.Mock
     pullsUpdate?: jest.Mock
     gitDeleteRef?: jest.Mock
   } = {}
 ): Record<string, unknown> {
+  const pullsList =
+    overrides.pullsList ?? jest.fn().mockResolvedValue({data: []})
   return {
+    // Stands in for octokit.paginate, which walks every page and returns the
+    // flattened array. The default delegates to pullsList so tests that only
+    // care about a single page keep asserting against it.
+    paginate:
+      overrides.paginate ??
+      jest.fn(
+        async (
+          endpoint: (params: unknown) => Promise<{data: unknown[]}>,
+          params: unknown
+        ) => (await endpoint(params)).data
+      ),
     rest: {
       pulls: {
-        list: overrides.pullsList ?? jest.fn().mockResolvedValue({data: []}),
+        list: pullsList,
         update: overrides.pullsUpdate ?? jest.fn().mockResolvedValue({})
       },
       issues: {
@@ -113,6 +127,49 @@ describe('closeExistingPRs', () => {
       repo: 'target-repo',
       ref: 'heads/source-owner-source-repo-oldsha123-0'
     })
+  })
+
+  it('closes stale PRs beyond the first page of results', async () => {
+    // A single list call is capped at 100 results; a repo that has accumulated
+    // more open sync PRs than that would silently keep the overflow open.
+    const allStalePRs = Array.from({length: 150}, (_, i) => ({
+      number: i + 1,
+      head: {ref: `source-owner-source-repo-oldsha${i}-0`}
+    }))
+
+    // Only ever hands back the first page, like a lone pulls.list call.
+    const pullsList = jest
+      .fn()
+      .mockResolvedValue({data: allStalePRs.slice(0, 100)})
+    // Walks every page, like the real octokit.paginate.
+    const paginate = jest.fn().mockResolvedValue(allStalePRs)
+    const issuesCreateComment = jest.fn().mockResolvedValue({})
+    const pullsUpdate = jest.fn().mockResolvedValue({})
+    const gitDeleteRef = jest.fn().mockResolvedValue({})
+
+    const octokit = createMockOctokit({
+      pullsList,
+      paginate,
+      issuesCreateComment,
+      pullsUpdate,
+      gitDeleteRef
+    })
+    const fileSync = createFileSync(octokit)
+
+    await fileSync.closeExistingPRs(remoteRepo, 500, branchPrefix)
+
+    // Must paginate rather than issue a single capped list call.
+    expect(paginate).toHaveBeenCalledWith(pullsList, {
+      owner: 'target-owner',
+      repo: 'target-repo',
+      state: 'open',
+      per_page: 100
+    })
+
+    // All 150 get closed, not just the first page's 100.
+    expect(issuesCreateComment).toHaveBeenCalledTimes(150)
+    expect(pullsUpdate).toHaveBeenCalledTimes(150)
+    expect(gitDeleteRef).toHaveBeenCalledTimes(150)
   })
 
   it('does nothing when no open PRs match the prefix', async () => {
