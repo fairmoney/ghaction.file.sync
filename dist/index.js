@@ -66,26 +66,25 @@ exports.context = github_1.context;
 /***/ }),
 
 /***/ 7663:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.FileSync = void 0;
 const js_yaml_1 = __nccwpck_require__(4281);
 const util_1 = __nccwpck_require__(7030);
 class FileSync {
+    configFile;
+    repo;
+    dryRun;
+    gitSha;
+    htmlUrl;
+    octokit;
+    log;
+    runId;
+    repoStr;
     constructor(inputs, context, octokit, log) {
-        var _a;
         this.log = log;
         this.octokit = octokit;
         this.configFile = inputs.configFile;
@@ -95,23 +94,24 @@ class FileSync {
         this.runId = context.runId;
         this.repoStr = toRepoStr(this.repo);
         this.htmlUrl =
-            ((_a = context.payload.repository) === null || _a === void 0 ? void 0 : _a.html_url) ||
+            context.payload.repository?.html_url ||
                 `https://github.com/${this.repo.owner}/${this.repo.repo}`;
     }
     /**
      * name
      */
-    loadConfigFile() {
-        return __awaiter(this, void 0, void 0, function* () {
-            this.log.startGroup(`📝 Fetching '${this.configFile}' from ${this.repo.owner}/${this.repo.repo}`);
-            const { config } = yield this.octokit.config.get(Object.assign(Object.assign({}, this.repo), { path: this.configFile }));
-            this.log.info(`🛠 config:\n${(0, js_yaml_1.dump)(config)}`);
-            if (!config.syncs || !config.syncs.length) {
-                this.log.warning('😰 Nothing to sync');
-            }
-            this.log.endGroup();
-            return config;
+    async loadConfigFile() {
+        this.log.startGroup(`📝 Fetching '${this.configFile}' from ${this.repo.owner}/${this.repo.repo}`);
+        const { config } = await this.octokit.config.get({
+            ...this.repo,
+            path: this.configFile
         });
+        this.log.info(`🛠 config:\n${(0, js_yaml_1.dump)(config)}`);
+        if (!config.syncs || !config.syncs.length) {
+            this.log.warning('😰 Nothing to sync');
+        }
+        this.log.endGroup();
+        return config;
     }
     toRepo(str) {
         const input = str.split('/', 2);
@@ -122,109 +122,128 @@ class FileSync {
             repo
         };
     }
-    isRepositoryArchived(repo) {
-        return __awaiter(this, void 0, void 0, function* () {
+    async isRepositoryArchived(repo) {
+        try {
+            const { data } = await this.octokit.repos.get({
+                owner: repo.owner,
+                repo: repo.repo
+            });
+            return data.archived;
+        }
+        catch (error) {
+            this.log.warning(`⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${(0, util_1.toErrorMessage)(error)}`);
+            return false;
+        }
+    }
+    async closeExistingPRs(remoteRepo, newPrNumber, branchPrefix) {
+        if (this.dryRun) {
+            this.log.info(`✔ Skipping cleanup of existing PRs for ${toRepoStr(remoteRepo)} due to dry run`);
+            return;
+        }
+        const { data: openPRs } = await this.octokit.rest.pulls.list({
+            ...remoteRepo,
+            state: 'open',
+            per_page: 100
+        });
+        const stalePRs = openPRs.filter((pr) => pr.head.ref.startsWith(branchPrefix) && pr.number !== newPrNumber);
+        for (const pr of stalePRs) {
             try {
-                const { data } = yield this.octokit.repos.get({
-                    owner: repo.owner,
-                    repo: repo.repo
+                await this.octokit.rest.issues.createComment({
+                    ...remoteRepo,
+                    issue_number: pr.number,
+                    body: `Superseded by #${newPrNumber}`
                 });
-                return data.archived;
+                await this.octokit.rest.pulls.update({
+                    ...remoteRepo,
+                    pull_number: pr.number,
+                    state: 'closed'
+                });
+                try {
+                    await this.octokit.rest.git.deleteRef({
+                        ...remoteRepo,
+                        ref: `heads/${pr.head.ref}`
+                    });
+                }
+                catch {
+                    // Branch may already be deleted — ignore
+                }
+                this.log.info(`🧹 Closed superseded PR #${pr.number} and deleted branch ${pr.head.ref}`);
             }
             catch (error) {
-                this.log.warning(`⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${(0, util_1.toErrorMessage)(error)}`);
-                return false;
+                this.log.warning(`⚠️ Failed to close PR #${pr.number} in ${toRepoStr(remoteRepo)}: ${(0, util_1.toErrorMessage)(error)}`);
             }
-        });
+        }
     }
-    closeExistingPRs(remoteRepo, newPrNumber, branchPrefix) {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (this.dryRun) {
-                this.log.info(`✔ Skipping cleanup of existing PRs for ${toRepoStr(remoteRepo)} due to dry run`);
-                return;
-            }
-            const { data: openPRs } = yield this.octokit.rest.pulls.list(Object.assign(Object.assign({}, remoteRepo), { state: 'open', per_page: 100 }));
-            const stalePRs = openPRs.filter((pr) => pr.head.ref.startsWith(branchPrefix) && pr.number !== newPrNumber);
-            for (const pr of stalePRs) {
+    async run() {
+        this.log.info('🏃 Running GitHub File Sync');
+        const config = await this.loadConfigFile();
+        for (let syncIndex = 0; syncIndex < config.syncs.length; syncIndex++) {
+            const sync = config.syncs[syncIndex];
+            this.log.startGroup(`📝 Fetching files from ${this.repoStr}`);
+            for (const file of sync.files) {
+                this.log.info(`📝 Fetching ${file.src}`);
                 try {
-                    yield this.octokit.rest.issues.createComment(Object.assign(Object.assign({}, remoteRepo), { issue_number: pr.number, body: `Superseded by #${newPrNumber}` }));
-                    yield this.octokit.rest.pulls.update(Object.assign(Object.assign({}, remoteRepo), { pull_number: pr.number, state: 'closed' }));
-                    try {
-                        yield this.octokit.rest.git.deleteRef(Object.assign(Object.assign({}, remoteRepo), { ref: `heads/${pr.head.ref}` }));
+                    const { data } = await this.octokit.repos.getContent({
+                        ...this.repo,
+                        path: file.src
+                    });
+                    if (Array.isArray(data)) {
+                        this.log.warning(`⚠️ Skipping '${file.src}': path is a directory, not a file`);
+                        continue;
                     }
-                    catch (_a) {
-                        // Branch may already be deleted — ignore
+                    if ('content' in data) {
+                        file.content = data.content;
                     }
-                    this.log.info(`🧹 Closed superseded PR #${pr.number} and deleted branch ${pr.head.ref}`);
                 }
                 catch (error) {
-                    this.log.warning(`⚠️ Failed to close PR #${pr.number} in ${toRepoStr(remoteRepo)}: ${(0, util_1.toErrorMessage)(error)}`);
+                    this.log.warning(`⚠️ Failed to fetch '${file.src}': ${(0, util_1.toErrorMessage)(error)}`);
                 }
             }
-        });
-    }
-    run() {
-        return __awaiter(this, void 0, void 0, function* () {
-            this.log.info('🏃 Running GitHub File Sync');
-            const config = yield this.loadConfigFile();
-            for (let syncIndex = 0; syncIndex < config.syncs.length; syncIndex++) {
-                const sync = config.syncs[syncIndex];
-                this.log.startGroup(`📝 Fetching files from ${this.repoStr}`);
-                for (const file of sync.files) {
-                    this.log.info(`📝 Fetching ${file.src}`);
+            this.log.endGroup();
+            for (const remoteRepoStr of sync.repos) {
+                const remoteRepo = this.toRepo(remoteRepoStr);
+                // Check if repository is archived
+                const isArchived = await this.isRepositoryArchived(remoteRepo);
+                if (isArchived) {
+                    this.log.info(`⏭️ Skipping ${toRepoStr(remoteRepo)} as it is archived`);
+                    continue;
+                }
+                this.log.info(`💄 Creating pull request for ${toRepoStr(remoteRepo)}`);
+                const prOptions = {
+                    ...remoteRepo,
+                    title: `🔃 Synced files from ${this.repoStr}`,
+                    body: `🔃 Synced files from [${this.repoStr}](${this.htmlUrl})\n\nThis PR was created automatically by the [ghaction.file.sync](https://github.com/jetersen/ghaction.file.sync) workflow run [#${this.runId}](${this.htmlUrl}/actions/runs/${this.runId})`,
+                    head: `${toRepoStr(this.repo, '-')}-${this.gitSha}-${syncIndex}`,
+                    createWhenEmpty: false,
+                    changes: [filesToChanges(sync.files)]
+                };
+                if (this.dryRun) {
+                    this.log.info('✔ No pull request was created due to dry run');
+                }
+                else {
                     try {
-                        const { data } = yield this.octokit.repos.getContent(Object.assign(Object.assign({}, this.repo), { path: file.src }));
-                        if (Array.isArray(data)) {
-                            this.log.warning(`⚠️ Skipping '${file.src}': path is a directory, not a file`);
-                            continue;
+                        const pr = await this.octokit.createPullRequest(prOptions);
+                        if (pr === null) {
+                            this.log.info('✔ No pull request was created since there were no changes');
                         }
-                        if ('content' in data) {
-                            file.content = data.content;
+                        else {
+                            this.log.info(`✅ Pull request created: ${pr.data.number} ${pr.data.html_url}`);
+                            const branchPrefix = `${toRepoStr(this.repo, '-')}-`;
+                            await this.closeExistingPRs(remoteRepo, pr.data.number, branchPrefix);
                         }
                     }
                     catch (error) {
-                        this.log.warning(`⚠️ Failed to fetch '${file.src}': ${(0, util_1.toErrorMessage)(error)}`);
-                    }
-                }
-                this.log.endGroup();
-                for (const remoteRepoStr of sync.repos) {
-                    const remoteRepo = this.toRepo(remoteRepoStr);
-                    // Check if repository is archived
-                    const isArchived = yield this.isRepositoryArchived(remoteRepo);
-                    if (isArchived) {
-                        this.log.info(`⏭️ Skipping ${toRepoStr(remoteRepo)} as it is archived`);
-                        continue;
-                    }
-                    this.log.info(`💄 Creating pull request for ${toRepoStr(remoteRepo)}`);
-                    const prOptions = Object.assign(Object.assign({}, remoteRepo), { title: `🔃 Synced files from ${this.repoStr}`, body: `🔃 Synced files from [${this.repoStr}](${this.htmlUrl})\n\nThis PR was created automatically by the [ghaction.file.sync](https://github.com/jetersen/ghaction.file.sync) workflow run [#${this.runId}](${this.htmlUrl}/actions/runs/${this.runId})`, head: `${toRepoStr(this.repo, '-')}-${this.gitSha}-${syncIndex}`, createWhenEmpty: false, changes: [filesToChanges(sync.files)] });
-                    if (this.dryRun) {
-                        this.log.info('✔ No pull request was created due to dry run');
-                    }
-                    else {
-                        try {
-                            const pr = yield this.octokit.createPullRequest(prOptions);
-                            if (pr === null) {
-                                this.log.info('✔ No pull request was created since there were no changes');
-                            }
-                            else {
-                                this.log.info(`✅ Pull request created: ${pr.data.number} ${pr.data.html_url}`);
-                                const branchPrefix = `${toRepoStr(this.repo, '-')}-`;
-                                yield this.closeExistingPRs(remoteRepo, pr.data.number, branchPrefix);
-                            }
+                        const msg = (0, util_1.toErrorMessage)(error);
+                        if (msg === 'Reference already exists') {
+                            this.log.info(`⛔ Pull request already exists`);
                         }
-                        catch (error) {
-                            const msg = (0, util_1.toErrorMessage)(error);
-                            if (msg === 'Reference already exists') {
-                                this.log.info(`⛔ Pull request already exists`);
-                            }
-                            else {
-                                this.log.warning(`⚠️ Failed to create pull request for ${toRepoStr(remoteRepo)}: ${msg}`);
-                            }
+                        else {
+                            this.log.warning(`⚠️ Failed to create pull request for ${toRepoStr(remoteRepo)}: ${msg}`);
                         }
                     }
                 }
             }
-        });
+        }
     }
 }
 exports.FileSync = FileSync;
@@ -294,6 +313,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Log = void 0;
 const core = __importStar(__nccwpck_require__(7484));
 class Log {
+    dryRun;
     constructor(dryRun) {
         this.dryRun = dryRun;
     }
@@ -359,15 +379,6 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const context_1 = __nccwpck_require__(4183);
@@ -375,18 +386,16 @@ const fileSync_1 = __nccwpck_require__(7663);
 const octokit_1 = __nccwpck_require__(5957);
 const log_1 = __nccwpck_require__(4078);
 const util_1 = __nccwpck_require__(7030);
-function run() {
-    return __awaiter(this, void 0, void 0, function* () {
-        try {
-            const log = new log_1.Log(context_1.inputs.dryRun);
-            const octokit = yield (0, octokit_1.getOctokit)(log);
-            const fileSync = new fileSync_1.FileSync(context_1.inputs, context_1.context, octokit, log);
-            yield fileSync.run();
-        }
-        catch (error) {
-            core.setFailed((0, util_1.toErrorMessage)(error));
-        }
-    });
+async function run() {
+    try {
+        const log = new log_1.Log(context_1.inputs.dryRun);
+        const octokit = await (0, octokit_1.getOctokit)(log);
+        const fileSync = new fileSync_1.FileSync(context_1.inputs, context_1.context, octokit, log);
+        await fileSync.run();
+    }
+    catch (error) {
+        core.setFailed((0, util_1.toErrorMessage)(error));
+    }
 }
 run();
 
@@ -431,15 +440,6 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getOctokit = getOctokit;
 const core = __importStar(__nccwpck_require__(7484));
@@ -449,49 +449,54 @@ const octokit_plugin_config_1 = __nccwpck_require__(7139);
 const octokit_plugin_create_pull_request_1 = __nccwpck_require__(1734);
 const context_1 = __nccwpck_require__(4183);
 const util_1 = __nccwpck_require__(7030);
-function getOctokit(log) {
-    return __awaiter(this, void 0, void 0, function* () {
-        core.startGroup('🔐 Authenticating');
-        let options;
-        if (context_1.inputs.githubToken) {
-            log.info('🔑 Authenticating with a GitHub Token');
-            options = (0, utils_1.getOctokitOptions)(context_1.inputs.githubToken);
+async function getOctokit(log) {
+    core.startGroup('🔐 Authenticating');
+    let options;
+    if (context_1.inputs.githubToken) {
+        log.info('🔑 Authenticating with a GitHub Token');
+        options = (0, utils_1.getOctokitOptions)(context_1.inputs.githubToken);
+    }
+    try {
+        if (!options && context_1.inputs.appId && context_1.inputs.privateKey) {
+            const appCredentials = {
+                appId: context_1.inputs.appId,
+                privateKey: context_1.inputs.privateKey
+            };
+            log.info('🔑 Authenticating with a GitHub App Installation Token');
+            const appOctokit = new utils_1.GitHub({
+                authStrategy: auth_app_1.createAppAuth,
+                auth: {
+                    type: 'app',
+                    ...appCredentials
+                }
+            });
+            log.info('📝 Fetching GitHub App Installation Token');
+            const { data: { id: installationId } } = await appOctokit.apps.getRepoInstallation(context_1.context.repo);
+            options = {
+                authStrategy: auth_app_1.createAppAuth,
+                auth: {
+                    type: 'installation',
+                    installationId,
+                    ...appCredentials
+                }
+            };
+            log.info(`✅ Fetched GitHub App Installation Token`);
         }
-        try {
-            if (!options && context_1.inputs.appId && context_1.inputs.privateKey) {
-                const appCredentials = {
-                    appId: context_1.inputs.appId,
-                    privateKey: context_1.inputs.privateKey
-                };
-                log.info('🔑 Authenticating with a GitHub App Installation Token');
-                const appOctokit = new utils_1.GitHub({
-                    authStrategy: auth_app_1.createAppAuth,
-                    auth: Object.assign({ type: 'app' }, appCredentials)
-                });
-                log.info('📝 Fetching GitHub App Installation Token');
-                const { data: { id: installationId } } = yield appOctokit.apps.getRepoInstallation(context_1.context.repo);
-                options = {
-                    authStrategy: auth_app_1.createAppAuth,
-                    auth: Object.assign({ type: 'installation', installationId }, appCredentials)
-                };
-                log.info(`✅ Fetched GitHub App Installation Token`);
-            }
-            if (!options) {
-                throw new Error(`💥 No credentials provided, please provide a 'github-token' to authenticate as a user or provide a 'app-id' and 'private-key' to authenticate as a GitHub App`);
-            }
+        if (!options) {
+            throw new Error(`💥 No credentials provided, please provide a 'github-token' to authenticate as a user or provide a 'app-id' and 'private-key' to authenticate as a GitHub App`);
         }
-        catch (e) {
-            const msg = (0, util_1.toErrorMessage)(e);
-            log.error(msg);
-            throw new Error(`🔒 Failed to authenticate: ${msg}`);
-        }
-        finally {
-            core.endGroup();
-        }
-        // @ts-expect-error: plugin types conflict due to duplicate @octokit/core versions
-        const github = utils_1.GitHub.plugin(octokit_plugin_config_1.config, octokit_plugin_create_pull_request_1.createPullRequest);
-        return new github(options);
-    });
+    }
+    catch (e) {
+        const msg = (0, util_1.toErrorMessage)(e);
+        log.error(msg);
+        throw new Error(`🔒 Failed to authenticate: ${msg}`);
+    }
+    finally {
+        core.endGroup();
+    }
+    // @ts-expect-error: plugin types conflict due to duplicate @octokit/core versions
+    const github = utils_1.GitHub.plugin(octokit_plugin_config_1.config, octokit_plugin_create_pull_request_1.createPullRequest);
+    return new github(options);
 }
 
 

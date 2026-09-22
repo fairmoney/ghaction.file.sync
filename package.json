@@ -6,6 +6,9 @@
   "author": "jetersen",
   "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "tsc",
     "format": "prettier --write **/*.ts",
@@ -28,7 +31,7 @@
     "@octokit/types": "^6.2.1",
     "@types/is-base64": "^1.1.0",
     "@types/jest": "29.5.14",
-    "@types/node": "20.19.32",
+    "@types/node": "24.13.6",
     "@vercel/ncc": "0.38.4",
     "eslint": "8.57.1",
     "eslint-plugin-github": "5.1.8",
