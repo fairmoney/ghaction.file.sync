@@ -24,4 +24,5 @@ export interface Inputs {
   appId: string
   configFile: string
   dryRun: boolean
+  skipCi: boolean
 }

@@ -15,7 +15,8 @@ export const inputs: Inputs = {
   privateKey: privateKey(),
   appId: core.getInput('appId') || '',
   configFile: core.getInput('configFile') || '.github/syncs.yml',
-  dryRun: /true/i.test(core.getInput('dryRun'))
+  dryRun: /true/i.test(core.getInput('dryRun')),
+  skipCi: /true/i.test(core.getInput('skipCi'))
 }
 
 export const context = ghContext
