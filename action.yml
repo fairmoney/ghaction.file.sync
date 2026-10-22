@@ -28,6 +28,10 @@ inputs:
     required: false
     description: ""
     default: .github/syncs.yml
+  skipCi:
+    required: false
+    description: Add [skip ci] to the sync commit so the target repository's pull_request workflows do not run. Ignored for targets whose default branch has required status checks, where the PR could not be merged otherwise.
+    default: "false"
 runs:
   using: node24
   main: dist/index.js

@@ -58,7 +58,8 @@ exports.inputs = {
     privateKey: privateKey(),
     appId: core.getInput('appId') || '',
     configFile: core.getInput('configFile') || '.github/syncs.yml',
-    dryRun: /true/i.test(core.getInput('dryRun'))
+    dryRun: /true/i.test(core.getInput('dryRun')),
+    skipCi: /true/i.test(core.getInput('skipCi'))
 };
 exports.context = github_1.context;
 
@@ -72,12 +73,16 @@ exports.context = github_1.context;
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.FileSync = void 0;
+exports.ciNote = ciNote;
+exports.filesToChanges = filesToChanges;
 const js_yaml_1 = __nccwpck_require__(4281);
 const util_1 = __nccwpck_require__(7030);
 class FileSync {
     configFile;
     repo;
     dryRun;
+    skipCi;
+    sha;
     gitSha;
     htmlUrl;
     octokit;
@@ -89,7 +94,9 @@ class FileSync {
         this.octokit = octokit;
         this.configFile = inputs.configFile;
         this.dryRun = inputs.dryRun;
+        this.skipCi = inputs.skipCi;
         this.repo = context.repo;
+        this.sha = context.sha;
         this.gitSha = context.sha.substring(0, 12);
         this.runId = context.runId;
         this.repoStr = toRepoStr(this.repo);
@@ -104,10 +111,12 @@ class FileSync {
         this.log.startGroup(`📝 Fetching '${this.configFile}' from ${this.repo.owner}/${this.repo.repo}`);
         const { config } = await this.octokit.config.get({
             ...this.repo,
-            path: this.configFile
+            path: this.configFile,
+            // The triggering commit, so a pull_request run tests the PR's config
+            branch: this.sha
         });
         this.log.info(`🛠 config:\n${(0, js_yaml_1.dump)(config)}`);
-        if (!config.syncs || !config.syncs.length) {
+        if (!config.syncs?.length) {
             this.log.warning('😰 Nothing to sync');
         }
         this.log.endGroup();
@@ -122,17 +131,49 @@ class FileSync {
             repo
         };
     }
-    async isRepositoryArchived(repo) {
+    async getRepositoryInfo(repo) {
         try {
             const { data } = await this.octokit.repos.get({
                 owner: repo.owner,
                 repo: repo.repo
             });
-            return data.archived;
+            return { archived: data.archived, defaultBranch: data.default_branch };
         }
         catch (error) {
-            this.log.warning(`⚠️ Failed to check archive status for ${toRepoStr(repo)}: ${(0, util_1.toErrorMessage)(error)}`);
-            return false;
+            this.log.warning(`⚠️ Failed to fetch repository info for ${toRepoStr(repo)}: ${(0, util_1.toErrorMessage)(error)}`);
+            return { archived: false, defaultBranch: undefined };
+        }
+    }
+    /**
+     * Whether a PR into `branch` needs status checks to pass, from classic
+     * branch protection or from a ruleset. A PR with `[skip ci]` into such a
+     * branch would wait for the checks forever, so when unsure this answers
+     * true and CI runs.
+     */
+    async hasRequiredStatusChecks(repo, branch) {
+        try {
+            const { data } = await this.octokit.request('GET /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks', { ...repo, branch });
+            const checks = data;
+            if (checks.contexts?.length || checks.checks?.length) {
+                return true;
+            }
+        }
+        catch (error) {
+            // 404: the branch is not protected or protection requires no checks
+            if ((0, util_1.errorStatus)(error) !== 404) {
+                this.log.warning(`⚠️ Failed to read branch protection of ${branch} in ${toRepoStr(repo)}, assuming status checks are required: ${(0, util_1.toErrorMessage)(error)}`);
+                return true;
+            }
+        }
+        try {
+            const { data } = await this.octokit.request('GET /repos/{owner}/{repo}/rules/branches/{branch}', { ...repo, branch, per_page: 100 });
+            const rules = data;
+            return rules.some(rule => rule.type === 'required_status_checks' &&
+                !!rule.parameters?.required_status_checks?.length);
+        }
+        catch (error) {
+            this.log.warning(`⚠️ Failed to read rulesets of ${branch} in ${toRepoStr(repo)}, assuming status checks are required: ${(0, util_1.toErrorMessage)(error)}`);
+            return true;
         }
     }
     async closeExistingPRs(remoteRepo, newPrNumber, branchPrefix) {
@@ -178,7 +219,13 @@ class FileSync {
     }
     async run() {
         this.log.info('🏃 Running GitHub File Sync');
+        this.log.info(this.skipCi
+            ? '⏭️ skipCi is on: [skip ci] is added unless the target branch requires status checks'
+            : '🧪 skipCi is off: sync commits run CI in every target repository');
         const config = await this.loadConfigFile();
+        if (!config.syncs?.length) {
+            return;
+        }
         for (let syncIndex = 0; syncIndex < config.syncs.length; syncIndex++) {
             const sync = config.syncs[syncIndex];
             this.log.startGroup(`📝 Fetching files from ${this.repoStr}`);
@@ -187,7 +234,8 @@ class FileSync {
                 try {
                     const { data } = await this.octokit.repos.getContent({
                         ...this.repo,
-                        path: file.src
+                        path: file.src,
+                        ref: this.sha
                     });
                     if (Array.isArray(data)) {
                         this.log.warning(`⚠️ Skipping '${file.src}': path is a directory, not a file`);
@@ -204,20 +252,35 @@ class FileSync {
             this.log.endGroup();
             for (const remoteRepoStr of sync.repos) {
                 const remoteRepo = this.toRepo(remoteRepoStr);
-                // Check if repository is archived
-                const isArchived = await this.isRepositoryArchived(remoteRepo);
-                if (isArchived) {
+                const { archived, defaultBranch } = await this.getRepositoryInfo(remoteRepo);
+                if (archived) {
                     this.log.info(`⏭️ Skipping ${toRepoStr(remoteRepo)} as it is archived`);
                     continue;
                 }
+                let skipCi = false;
+                if (this.skipCi) {
+                    if (defaultBranch) {
+                        skipCi = !(await this.hasRequiredStatusChecks(remoteRepo, defaultBranch));
+                        this.log.info(skipCi
+                            ? `⏭️ CI will be skipped for ${toRepoStr(remoteRepo)} (no required status checks on ${defaultBranch})`
+                            : `🧪 CI will run for ${toRepoStr(remoteRepo)} (required status checks on ${defaultBranch})`);
+                    }
+                    else {
+                        this.log.info(`🧪 CI will run for ${toRepoStr(remoteRepo)} (default branch unknown)`);
+                    }
+                }
                 this.log.info(`💄 Creating pull request for ${toRepoStr(remoteRepo)}`);
+                const body = `🔃 Synced files from [${this.repoStr}](${this.htmlUrl})\n\nThis PR was created automatically by the [ghaction.file.sync](https://github.com/jetersen/ghaction.file.sync) workflow run [#${this.runId}](${this.htmlUrl}/actions/runs/${this.runId})`;
                 const prOptions = {
                     ...remoteRepo,
                     title: `🔃 Synced files from ${this.repoStr}`,
-                    body: `🔃 Synced files from [${this.repoStr}](${this.htmlUrl})\n\nThis PR was created automatically by the [ghaction.file.sync](https://github.com/jetersen/ghaction.file.sync) workflow run [#${this.runId}](${this.htmlUrl}/actions/runs/${this.runId})`,
+                    body: this.skipCi
+                        ? `${body}\n\n${ciNote(skipCi, defaultBranch)}`
+                        : body,
                     head: `${toRepoStr(this.repo, '-')}-${this.gitSha}-${syncIndex}`,
+                    base: defaultBranch,
                     createWhenEmpty: false,
-                    changes: [filesToChanges(sync.files)]
+                    changes: [filesToChanges(sync.files, skipCi)]
                 };
                 if (this.dryRun) {
                     this.log.info('✔ No pull request was created due to dry run');
@@ -252,7 +315,16 @@ exports.FileSync = FileSync;
 function toRepoStr(repo, separator = '/') {
     return `${repo.owner}${separator}${repo.repo}`;
 }
-function filesToChanges(files) {
+function ciNote(skipCi, branch) {
+    if (skipCi) {
+        return `CI is skipped for this PR (\`[skip ci]\` in the commit) because \`${branch}\` has no required status checks. Merge it when convenient. To run CI first, push an empty commit to this branch (or press **Update branch** if GitHub offers it). On merge the \`[skip ci]\` marker is kept, so the merge workflows on \`${branch}\` are skipped as well. Edit the squash commit title to drop \`[skip ci]\` if you need them to run.`;
+    }
+    if (!branch) {
+        return 'CI runs for this PR because its base branch could not be checked for required status checks.';
+    }
+    return `CI runs for this PR because \`${branch}\` requires status checks to pass.`;
+}
+function filesToChanges(files, skipCi) {
     const result = files.reduce((obj, file) => {
         const dest = file.dest ? file.dest : file.src;
         if (file.content) {
@@ -265,7 +337,7 @@ function filesToChanges(files) {
     }, {});
     return {
         emptyCommit: false,
-        commit: '🔃 File Sync',
+        commit: skipCi ? '🔃 File Sync [skip ci]' : '🔃 File Sync',
         files: result
     };
 }
@@ -511,6 +583,7 @@ async function getOctokit(log) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.toErrorMessage = toErrorMessage;
+exports.errorStatus = errorStatus;
 function toErrorMessage(error) {
     if (error instanceof Error)
         return error.message;
@@ -523,6 +596,13 @@ function toErrorMessage(error) {
         return error.message;
     }
     return 'Unknown error';
+}
+function errorStatus(error) {
+    if (typeof error === 'object' && error !== null && 'status' in error) {
+        const { status } = error;
+        return typeof status === 'number' ? status : undefined;
+    }
+    return undefined;
 }
 
 
